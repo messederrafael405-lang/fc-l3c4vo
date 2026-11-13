@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow,noarchive">
+<meta name="googlebot" content="noindex,nofollow,noarchive">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#101816">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Fluxo">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Fluxo de caixa</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<style>
+:root{--bg:#101816;--card:#1a2622;--txt:#e8f0ec;--mut:#8aa097;--pos:#7dcc9a;--neg:#f07171;--line:#2a3b36;--tag:#d4b56a}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg);color:var(--txt);font:16px/1.45 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;-webkit-text-size-adjust:100%}
+body{max-width:480px;margin:0 auto;padding:calc(16px + env(safe-area-inset-top)) 16px calc(28px + env(safe-area-inset-bottom))}
+h1{font-size:1.25rem;font-weight:650}
+h2{font-size:.92rem;font-weight:650;margin:0 0 8px;letter-spacing:.01em}
+.mut{color:var(--mut);font-size:.8rem}
+.pos{color:var(--pos)}
+.neg{color:var(--neg);font-weight:600}
+.card{background:var(--card);border-radius:14px;padding:14px 16px;margin:12px 0}
+#gate{margin-top:18vh;text-align:center}
+#gate p{margin:8px 0 18px}
+#gate form{display:flex;flex-direction:column;gap:10px}
+input[type=password]{width:100%;padding:14px;border:1px solid var(--line);border-radius:10px;background:#0c1311;color:var(--txt);font-size:16px}
+button{background:var(--pos);color:#102018;border:0;border-radius:10px;padding:13px 16px;font-weight:700;font-size:1rem}
+button:disabled{opacity:.6}
+#err{color:var(--neg);min-height:1.2em;font-size:.85rem}
+.saldo{font-size:2rem;font-weight:700;letter-spacing:-.02em;margin:4px 0 2px}
+.row{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.acoes .card{border-left:3px solid var(--pos)}
+.acoes .card p{font-size:.95rem}
+table{width:100%;border-collapse:collapse;font-size:.82rem}
+th{text-align:left;color:var(--mut);font-weight:600;padding:0 0 6px;border-bottom:1px solid var(--line)}
+th:last-child,td.num{text-align:right;white-space:nowrap}
+td{padding:8px 6px 8px 0;vertical-align:top;border-bottom:1px solid var(--line)}
+td:last-child{padding-right:0}
+.item{margin:0 0 3px}
+.tag{display:inline-block;font-size:.65rem;font-weight:700;letter-spacing:.02em;background:rgba(212,181,106,.18);color:var(--tag);border-radius:4px;padding:1px 5px;margin-right:4px;vertical-align:middle}
+.resumo{color:var(--mut);font-size:.8rem;margin:0 0 10px}
+.ac{color:var(--mut);font-style:italic;font-size:.78rem}
+.lista{list-style:none}
+.lista li{padding:8px 0;border-bottom:1px solid var(--line);font-size:.9rem}
+.lista li:last-child{border-bottom:0}
+header{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px}
+#sair{background:transparent;color:var(--mut);padding:6px 8px;font-size:.8rem;font-weight:600}
+#chart wrap,#chart{margin:4px -4px}
+</style>
+</head>
+<body>
+<div id="gate">
+  <h1>Fluxo de caixa</h1>
+  <p class="mut">Digite a senha para abrir</p>
+  <form id="f" autocomplete="on">
+    <input type="password" id="pw" name="password" autocomplete="current-password" enterkeyhint="go" required>
+    <button type="submit" id="btn">Entrar</button>
+    <p id="err"></p>
+  </form>
+</div>
+<div id="app" hidden></div>
+<script>
+const ITER=600000;
+const b64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const brl=v=>Number(v).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+const dia=iso=>{if(!iso)return'';const p=String(iso).split('-');return p.length>=3?p[2]+'/'+p[1]:p.length===2?p[1]+'/'+p[0]:iso};
+const mesNome=id=>{const[y,m]=id.split('-');const n=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'][+m-1];return n+' '+y};
+
+async function derivar(pw,salt,iter){
+  const enc=new TextEncoder();
+  const mat=await crypto.subtle.importKey('raw',enc.encode(pw),'PBKDF2',false,['deriveKey']);
+  return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:iter,hash:'SHA-256'},mat,{name:'AES-GCM',length:256},false,['decrypt']);
+}
+async function decifrar(pkg,pw){
+  const salt=b64(pkg.salt),iv=b64(pkg.iv),ct=b64(pkg.ct);
+  const key=await derivar(pw,salt,pkg.iter||ITER);
+  const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv},key,ct);
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+
+function chart(serie){
+  if(!serie||!serie.length)return'';
+  const w=320,h=132,l=6,r=6,t=10,b=10;
+  const vals=serie.map(x=>x.s);
+  let lo=Math.min(...vals,0),hi=Math.max(...vals,0);
+  if(lo===hi){lo-=1;hi+=1}
+  const X=i=>l+i*(w-l-r)/Math.max(serie.length-1,1);
+  const Y=v=>t+(hi-v)/(hi-lo)*(h-t-b);
+  const pts=serie.map((d,i)=>X(i).toFixed(1)+','+Y(d.s).toFixed(1)).join(' ');
+  const z=(lo<0&&hi>0)?`<line x1="${l}" x2="${w-r}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="rgba(255,255,255,.14)" stroke-width="1"/>`:'';
+  const mid=Y(0).toFixed(1);
+  const fill=`${X(0).toFixed(1)},${mid} ${pts} ${X(serie.length-1).toFixed(1)},${mid}`;
+  return `<div id="chart"><svg viewBox="0 0 ${w} ${h}" width="100%" height="132" aria-hidden="true">${z}<polyline points="${fill}" fill="rgba(125,204,154,.13)" stroke="none"/><polyline points="${pts}" fill="none" stroke="#7dcc9a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg></div>`;
+}
+
+function itensHTML(itens,ac){
+  let h=(itens||[]).map(it=>{
+    const tag=it.camila?'<span class="tag">Camila</span>':'';
+    const cls=it.v<0?'neg':it.v>0?'pos':'';
+    const sig=it.v>0?'+':'';
+    return `<div class="item">${tag}${esc(it.t)} <span class="${cls}">${sig}${brl(it.v)}</span></div>`;
+  }).join('');
+  if(ac)h+=`<div class="ac">A confirmar: ${esc(ac)}</div>`;
+  return h;
+}
+
+function render(d){
+  const quando=(()=>{const t=d.gerado_em||'';const m=t.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);return m?`${m[3]}/${m[2]}, ${m[4]}:${m[5]}`:t})();
+  const clsSaldo=d.saldo_atual<0?'neg':'';
+  let acoes='';
+  if(d.acoes&&d.acoes.length){
+    acoes='<section class="acoes"><h2>Ações</h2>'+d.acoes.map(a=>{
+      if(a.tipo==='freela'){
+        return `<article class="card"><p>Conseguir <strong>${brl(a.valor)}</strong> em freelas/eventos (Rafael ou Camila) até <strong>${dia(a.ate)}</strong> para pagar ${esc(a.item)}</p></article>`;
+      }
+      return `<article class="card"><p>Sacar <strong>${brl(a.valor)}</strong> do Cofrinho até <strong>${dia(a.ate)}</strong>.</p><p class="mut">Devolver em ${dia(a.devolver_em)}.</p></article>`;
+    }).join('')+'</section>';
+  }
+  const meses=(d.meses||[]).map(m=>{
+    const sCls=m.saldo<0?'neg':'';
+    const rows=(m.dias||[]).map(r=>`<tr><td>${dia(r.d)}</td><td>${itensHTML(r.itens,r.ac)}</td><td class="num${r.sf<0?' neg':''}">${brl(r.sf)}</td></tr>`).join('');
+    return `<section class="card"><h2>${esc(m.nome)}</h2><p class="resumo">Entradas ${brl(m.entradas)} · Saídas ${brl(m.saidas)} · Saldo <span class="${sCls}">${brl(m.saldo)}</span></p><table><thead><tr><th>Dia</th><th>Movimentos</th><th>Saldo</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+  }).join('');
+  const conf=(d.a_confirmar||[]).map(x=>{
+    const val=x.valor==null?'':` · ${brl(x.valor)}`;
+    const dt=x.data?dia(x.data)+' · ':'';
+    const st=x.status?` <span class="mut">${esc(x.status)}</span>`:'';
+    return `<li>${dt}<strong>${esc(x.item)}</strong>${val}${st}${x.fonte?`<div class="mut">${esc(x.fonte)}</div>`:''}</li>`;
+  }).join('');
+  document.getElementById('app').innerHTML=`
+    <header><div><h1>Fluxo de caixa</h1><p class="mut">Atualizado em ${esc(quando)}</p></div><button type="button" id="sair">Sair</button></header>
+    <section class="card"><p class="mut">Saldo atual</p><p class="saldo ${clsSaldo}">${brl(d.saldo_atual)}</p>
+      <p class="mut" style="margin-top:10px">Cofrinho (reserva de emergência, fora do fluxo)</p>
+      <p style="font-size:1.15rem;font-weight:650">${brl(d.reserva)}</p></section>
+    ${chart(d.serie)}
+    ${acoes}
+    ${meses}
+    ${conf?`<section class="card"><h2>A confirmar</h2><p class="mut" style="margin-bottom:6px">Sem valor no saldo até confirmar</p><ul class="lista">${conf}</ul></section>`:''}`;
+  document.getElementById('sair').onclick=()=>{sessionStorage.removeItem('fluxo_pw');location.reload()};
+}
+
+async function abrir(pw){
+  const btn=document.getElementById('btn');
+  const err=document.getElementById('err');
+  err.textContent='';
+  btn.disabled=true;btn.textContent='Abrindo…';
+  try{
+    const res=await fetch('payload.enc.json',{cache:'no-cache'});
+    if(!res.ok)throw new Error('falha');
+    const pkg=await res.json();
+    const data=await decifrar(pkg,pw);
+    sessionStorage.setItem('fluxo_pw',pw);
+    document.getElementById('gate').hidden=true;
+    document.getElementById('app').hidden=false;
+    render(data);
+  }catch(e){
+    sessionStorage.removeItem('fluxo_pw');
+    err.textContent='Senha incorreta.';
+    btn.disabled=false;btn.textContent='Entrar';
+  }
+}
+
+document.getElementById('f').onsubmit=e=>{e.preventDefault();abrir(document.getElementById('pw').value)};
+const saved=sessionStorage.getItem('fluxo_pw');
+if(saved)abrir(saved);
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
+</script>
+</body>
+</html>
